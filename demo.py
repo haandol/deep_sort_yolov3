@@ -32,8 +32,10 @@ def main():
     ctx = mx.cpu()
     FPS = 15
     score_threshold = 0.5
-    # yolo = model_zoo.get_model('yolo3_darknet53_coco', pretrained=True)
-    yolo = model_zoo.get_model('yolo3_mobilenet1.0_coco', pretrained=True)
+    yolo = model_zoo.get_model('yolo3_darknet53_coco', pretrained=True)
+    yolo.reset_class(classes=['person'], reuse_weights=['person'])
+    print(yolo.classes)
+    # yolo = model_zoo.get_model('yolo3_mobilenet1.0_coco', pretrained=True)
     # Definition of the parameters
     max_cosine_distance = 0.3
     nn_budget = None
@@ -118,7 +120,6 @@ def main():
 
         frame_index = frame_index + 1
 
-        '''
         for track in tracker.tracks:
             if not track.is_confirmed() or track.time_since_update > 1:
                 continue
@@ -134,13 +135,14 @@ def main():
         # Press Q to stop!
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
-        '''
 
     print('Time Elapsed: {:4.8f}'.format(time.time() - t0))
     tooks['tot'] += time.time() - t0
     times['tot'] += 1
 
-    print('Missed: {}'.format(tracker.missed))
+    print('Missed obj: {}, Missed frame: {}'.format(tracker.missed_obj, tracker.missed_frame))
+
+    print(tooks, times)
 
     capture.release()
     cv2.destroyAllWindows()

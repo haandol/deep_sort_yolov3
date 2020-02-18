@@ -46,6 +46,8 @@ class Tracker:
         self.kf = kalman_filter.KalmanFilter()
         self.tracks = []
         self._next_id = 1
+        self.missed_obj = 0
+        self.missed_frame = 0
 
     def predict(self):
         """Propagate track state distributions one time step forward.
@@ -74,6 +76,9 @@ class Tracker:
                 self.kf, detections[detection_idx])
         for track_idx in unmatched_tracks:
             self.tracks[track_idx].mark_missed()
+            self.missed_obj += 1
+        if unmatched_tracks:
+            self.missed_frame += 1
         for detection_idx in unmatched_detections:
             self._initiate_track(detections[detection_idx])
         self.tracks = [t for t in self.tracks if not t.is_deleted()]
