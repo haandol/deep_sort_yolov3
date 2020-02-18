@@ -1,3 +1,4 @@
+import logging
 import mxnet as mx
 from timeit import time
 import warnings
@@ -13,6 +14,8 @@ from deep_sort.tracker import Tracker
 from tools import generate_detections as gdet
 from deep_sort.detection import Detection as ddet
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger('deepsort')
 warnings.filterwarnings('ignore')
 
 times = {
@@ -27,15 +30,24 @@ tooks = {
     'tot': 0.0
 }
 
+
+def extend_bbox(bbox, ratio=.2):
+    xmin, ymin, xmax, ymax = bbox
+    return (
+        max(0, xmin - xmin*ratio),
+        max(0, ymin - ymin*ratio),
+        xmax + xmax*ratio,
+        ymax + ymax*ratio
+    )
+
+
 def main():
-    print('Start Tracking')
+    logger.info('Start Tracking')
     ctx = mx.cpu()
-    FPS = 15
+    FPS = 13
     score_threshold = 0.5
     yolo = model_zoo.get_model('yolo3_darknet53_coco', pretrained=True)
     yolo.reset_class(classes=['person'], reuse_weights=['person'])
-    print(yolo.classes)
-    # yolo = model_zoo.get_model('yolo3_mobilenet1.0_coco', pretrained=True)
     # Definition of the parameters
     max_cosine_distance = 0.3
     nn_budget = None
@@ -48,7 +60,7 @@ def main():
     metric = nn_matching.NearestNeighborDistanceMetric("cosine", max_cosine_distance, nn_budget)
     tracker = Tracker(metric)
 
-    capture = cv2.VideoCapture('v1.mp4')
+    capture = cv2.VideoCapture('video.mp4')
     frame_index = 0
 
     fps = 0.0
@@ -71,11 +83,11 @@ def main():
             short=416
         )
         x = x.as_in_context(ctx)
-        print('Transform: {:2.8f}'.format(time.time() - t2))
+        logger.info('Transform: {:2.8f}'.format(time.time() - t2))
 
         t1 = time.time()
         class_IDs, det_scores, det_boxes = yolo(x)
-        print('Yolo Duration: {:2.8f}'.format(time.time() - t1))
+        logger.info('Yolo Duration: {:2.8f}'.format(time.time() - t1))
         tooks['det'] += time.time() - t1
 
         t1 = time.time()
@@ -84,20 +96,20 @@ def main():
         for i, class_ID in enumerate(class_IDs[0]):
             if class_ID == person and det_scores[0][i] >= score_threshold:
                 boxs.append(det_boxes[0][i].asnumpy())
-        print('Filter #{} boxs: {:2.8f}'.format(len(boxs), time.time() - t1))
+        logger.info('Filter #{} boxs: {:2.8f}'.format(len(boxs), time.time() - t1))
         tooks['det'] += time.time() - t1
         times['det'] += 1
 
         t1 = time.time()
         features = encoder(img, boxs)
-        print('Encoder: {:2.8f}'.format(time.time() - t1))
+        logger.info('Encoder: {:2.8f}'.format(time.time() - t1))
         tooks['enc'] += time.time() - t1
         times['enc'] += 1
 
         t1 = time.time()
         # score to 1.0 here).
         detections = [Detection(bbox, 1.0, feature) for bbox, feature in zip(boxs, features)]
-        print('Generate Detection: {:2.8f}'.format(time.time() - t1))
+        logger.info('Generate Detection: {:2.8f}'.format(time.time() - t1))
 
         t1 = time.time()
         # Run non-maxima suppression.
@@ -105,44 +117,59 @@ def main():
         scores = np.array([d.confidence for d in detections])
         indices = preprocessing.non_max_suppression(boxes, nms_max_overlap, scores)
         detections = [detections[i] for i in indices]
-        print('NMS: {:2.8f}'.format(time.time() - t1))
+        logger.info('NMS: {:2.8f}'.format(time.time() - t1))
 
         # Call the tracker
         t1 = time.time()
         tracker.predict()
-        print('Tracker Predict: {:2.8f}'.format(time.time() - t1))
+        logger.info('Tracker Predict: {:2.8f}'.format(time.time() - t1))
 
         t1 = time.time()
         tracker.update(detections)
-        print('Tracker Update: {:2.8f}'.format(time.time() - t1))
+        logger.info('Tracker Update: {:2.8f}'.format(time.time() - t1))
 
-        print('{} Frame: {:2.8f}\n'.format(frame_index, time.time() - t2))
+        logger.info('{} Frame: {:2.8f}\n'.format(frame_index, time.time() - t2))
 
         frame_index = frame_index + 1
 
+        new_img = img.copy()
         for track in tracker.tracks:
+            bbox = [max(0, int(x)) for x in track.to_tlbr()]
             if not track.is_confirmed() or track.time_since_update > 1:
+                if track.time_since_update == 2:
+                    e_bbox = extend_bbox(bbox, ratio=.2)
+                    e_bbox = [int(x) for x in e_bbox]
+                    cv2.imwrite(
+                        'missed/{}-{}.jpg'.format(frame_index, track.track_id),
+                        img[e_bbox[1]:e_bbox[3], e_bbox[0]:e_bbox[2]],
+                    )
+                    logger.info('Cropped missed: xmin-{}, ymin-{}, xmax-{}, ymax-{}, shape-{}'.format(
+                        e_bbox[0], e_bbox[1], e_bbox[2], e_bbox[3], img.shape
+                    ))
+                logger.info('Skipped by time_since_update')
                 continue
-            bbox = track.to_tlbr()
-            cv2.rectangle(img, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])),(255,255,255), 2)
-            cv2.putText(img, str(track.track_id),(int(bbox[0]), int(bbox[1])+30),0, 5e-3 * 200, (0,255,0),2)
 
-        cv2.imshow('', img)
+            logger.info('Frame #{} - Id: {}'.format(frame_index, track.track_id))
+            cv2.rectangle(new_img, (bbox[0], bbox[1]), (bbox[2], bbox[3]),(255,255,255), 2)
+            cv2.putText(new_img, str(track.track_id),(bbox[0], bbox[1]+30),0, 5e-3 * 200, (0,255,0),2)
 
-        fps  = ( fps + (1./(time.time()-t2)) ) / 2
-        print("fps= %f"%(fps))
+        cv2.imwrite('images/{}.jpg'.format(frame_index), new_img)
+        cv2.imshow('', new_img)
+
+        fps  = (fps + (1./(time.time()-t2))) / 2
+        logger.info("fps= %f"%(fps))
 
         # Press Q to stop!
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    print('Time Elapsed: {:4.8f}'.format(time.time() - t0))
+    logger.info('Time Elapsed: {:4.8f}'.format(time.time() - t0))
     tooks['tot'] += time.time() - t0
     times['tot'] += 1
 
-    print('Missed obj: {}, Missed frame: {}'.format(tracker.missed_obj, tracker.missed_frame))
+    logger.info('Missed obj: {}, Missed frame: {}'.format(tracker.missed_obj, tracker.missed_frame))
 
-    print(tooks, times)
+    logger.info(tooks, times)
 
     capture.release()
     cv2.destroyAllWindows()
